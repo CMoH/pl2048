@@ -1,47 +1,156 @@
+:- module('2048', [new_game/1, abort_game/0]).
+
 :- set_prolog_stack(global, limit(8 * 10**9)).
 :- set_prolog_stack(local,  limit(8 * 10**9)).
 :- set_prolog_stack(trail,  limit(8 * 10**9)).
 
-solve :-
-    initial_board(Board),
-    %% breadth_first_search([[Board]],Solution),
-    depth_first_search([], Board, Solution),
-    print_solution(Solution).
+%% for thread management
 
-print_solution([]).
-print_solution([Board | Rest]) :-
-    print_board(Board), 
-    write('Enter stop to stop:'), read(Something),
-    Something \= 'stop',
-    print_solution(Rest).
+new_game(Board) :-
+    thread_loop([ board(Board, []) ]).
+
+abort_game :-
+    fail.
+
+%% paths representation:
+%% Path = [  board(Board, [
+%%                     move(left, Score, Path), 
+%%                     move(right, ...),
+%%                     move(down, ...),
+%%                     move(up, ...) ] ), 
+%%           board(Board, [
+%%                     move(left, Score, Path), 
+%%                     move(right, ...),
+%%                     move(...) ] ), 
+%%           ...
+%%        ]
+
+%% TODO: stop looping and stop in thread_get_message if MaxDepth reached
+thread_loop(Paths) :-
+    iddfs(Paths, NewPaths),
+    thread_handle_messages(NewPaths, SelectedPaths), !,
+    thread_loop(SelectedPaths).
+
+thread_handle_messages(Paths, Paths) :-
+    thread_peek_message(needNextMove(_)), !,
+    thread_get_message(needNextMove(ThreadId)),
+    find_best_move(Paths, Move),
+    thread_send_message(ThreadId, nextMove(Move)).
+thread_handle_messages(Paths, NewPaths) :-
+    thread_peek_message(board(_, _)), !,
+    thread_get_message(board(LastMove, Board)),
+    select_board(LastMove, Board, Paths, NewPaths).
+thread_handle_messages(_, _) :-
+    thread_peek_message(abort), !,
+    thread_get_message(abort),
+    fail.
+thread_handle_messages(Paths, Paths) :-
+    thread_peek_message(print_stats), !,
+    thread_get_message(print_stats),
+    print_stats(Paths).
+thread_handle_messages(Paths, Paths).
 
 
-depths(Depths, PathCount) :-
-    findall(N, depth_test(N), L),
-    length(L, PathCount),
-    sort(L, Depths),
-    [MinDepth | _Rest] = Depths, last(Depths, MaxDepth),
-    writef('Depth=%w..%w\nCount=%w\n', [MinDepth, MaxDepth], PathCount).
+iddfs(Paths, NewPaths) :-
+    findall(NewState, ( member(State, Paths), dfs1(State, NewState) ), NewPaths).
 
-depth_test(N) :-
-    initial_board(Board),
-    nth_successor(Board, 0, N).
+dfs1(board(Board, []), board(Board, NewMoves)) :- 
+    !,                          % stop after exploring one level
+    findall(NewMove, dfs1_gen_moves(Board, NewMove), NewMoves).
+dfs1(board(Board, Moves), board(Board, NewMoves)) :-
+    findall(NewMove, ( 
+                member(move(Direction, _Score, Path), Moves), 
+                iddfs(Path, NewPath),
+                sum_score(NewPath, NewScore),
+                NewMove = move(Direction, NewScore, NewPath) ),
+            NewMoves).
 
-nth_successor(Board, N, N) :- win(Board),  !.
-nth_successor(Board, N, Res) :- 
-    N1 is N+1, N1 < 4,
-    successor(Board, Board1),
-    nth_successor(Board1, N1, Res).
+dfs1_gen_moves(Board, Move) :-
+    gen_moves(Board, Direction, MovedBoard),
+    findall(board(NewBoard, []), 
+            gen_new_tiles(MovedBoard, NewBoard),
+            NewBoards),
+    sum_score(NewBoards, TotalScore),
+    Move = move(Direction, TotalScore, NewBoards).
 
-initial_board([0,0,0,0,
-               0,0,0,0,
-               0,0,0,0,
-               0,0,0,0]).
+sum_score(Boards, TotalScore) :-
+    findall(Score, ( 
+                member(board(Board, _), Boards), 
+                board_score(Board, Score) ),
+            Scores),
+    sum_list(Scores, TotalScore).
+
+
+find_best_move(Paths, Direction) :-
+    Paths = [board(_, Moves)],
+    Moves = [H|T],
+    find_best_move(T, H, Direction).
+
+find_best_move([], move(Direction, _, _), Direction) :- !.
+find_best_move([H|T], Current, Direction) :-
+    Current = move(_, CurrentScore, _),
+    H = move(_, OtherScore, _), !,
+    ( CurrentScore > OtherScore 
+      -> find_best_move(T, Current, Direction) 
+      ;  find_best_move(T, H, Direction) ).
+      
+%% executes a move by selecting the board chosen randomly by the game after LastMove
+select_board(LastMove, Board, Paths, NewGameTree) :-
+    Paths = [board(_, Moves)],
+    member(move(LastMove, _, NextBoards), Moves), !,
+    member(board(Board, NextMoves), NextBoards), !,
+    NewGameTree = [board(Board, NextMoves)].
+
+
+print_stats(Paths) :-
+    length(Paths, Len),
+    depth(Paths, Depth),
+    state_count(Paths, Count),
+    format('Top-level boards: ~w~n', [Len]),
+    format('Depth: ~w~n', [Depth]),
+    format('States: ~w~n', [Count]).
+
+depth([], 0).
+depth(Paths, DepthOut) :-
+    findall(Depth, (
+                member(board(_, Moves), Paths),
+                ( Moves = [] -> Depth = 0 
+                  ; ( member(move(_,_,Path), Moves),
+                      depth(Path, Depth) )
+                ) ),
+            Depths),
+    max_list(Depths, Depth),
+    DepthOut is Depth + 1.
+
+
+state_count([], 0).
+state_count(Paths, CountOut) :-
+    findall(Count, (
+                member(board(_, Moves), Paths),
+                ( Moves = [] -> Count = 0 
+                  ; ( member(move(_,_,Path), Moves),
+                      state_count(Path, Count) )
+            ) ),
+            Counts),
+    sum_list(Counts, Count),
+    length(Paths, BoardCount),
+    CountOut is Count + BoardCount.
+                       
+    
+
+%% development helpers
+
+%% solve(Solution) :-
+%%     empty_board(Board),
+%% %%    breadth_first_search([[Board]],Solution),
+%%     depth_first_search([], Board, Solution).
+
 
 test_board([0, 2, 4, 8,
             0, 2, 4, 8,
             0, 2, 4, 8,
             0, 2, 4, 8]).
+
 
 %% board printing predicates
 print_board(B) :-
@@ -87,6 +196,7 @@ breadth_first_search([[Node|Path]|RestPaths],Solution) :-
     breadth_first_search(CurrentPaths,Solution).
 
 
+
 %% dfs
 depth_first_search(CurrentPath,CurrentState,Solution) :-
     win(CurrentState), !, % stop searching this path after 2048
@@ -96,6 +206,24 @@ depth_first_search(CurrentPath,CurrentState,Solution) :-
     successor(CurrentState,NewState),
     not(member(NewState,CurrentPath)),
     depth_first_search([CurrentState|CurrentPath],NewState,Solution).
+
+
+%% depth-limited bfs
+breadth_first_search([[Node|Path]|_],[Node|Path], _MaxDepth) :-
+    win(Node), !.       % stop searching this path after 2048
+
+breadth_first_search([Path | RestPaths], Solution, MaxDepth) :-
+    length(Path, Depth), Depth > MaxDepth, !,
+    append(RestPaths, [Path], CurrentPaths),
+    breadth_first_search(CurrentPaths, Solution, MaxDepth).
+
+breadth_first_search([[Node|Path]|RestPaths],Solution, MaxDepth) :-
+    length([Node|Path], Depth), Depth =< MaxDepth,
+    findall([NewNode,Node|Path],
+            successor(Node,NewNode),
+            NewPaths),
+    append(RestPaths,NewPaths,CurrentPaths),
+    breadth_first_search(CurrentPaths,Solution, MaxDepth).
 
 
 %% bfs while caching moves in the database
@@ -150,10 +278,8 @@ examine_move(Board, Direction, MovedBoard, MaxDepth) :-
 %% cache a move and update score of parent moves
 add_move(Board, Direction, NextBoards) :-
     \+ cached_move(Board, Direction, _), !,
-    findall(BoardScore, 
-            board_score(Board, BoardScore), 
-            Scores),
-    sum_list(Scores, Score),
+
+    board_score(Board, Score), 
 
     sort(NextBoards, UniqueNextBoards),
 
@@ -207,9 +333,9 @@ board_score(Board, Score) :-
     findall(S, board_score_rule(Board, S), L),
     sum_list(L, Score).
 
-board_score_rule(Board,  2) :- win(Board).
-board_score_rule(Board, -4) :- lose(Board).
-board_score_rule(Board, FT) :- count(0, Board, FT).
+board_score_rule(Board,  10) :- win(Board).
+board_score_rule(Board, -10) :- lose(Board).
+board_score_rule(Board,  FT) :- count(0, Board, FT).
 
 
 update_parent_scores(Board, Score) :-
@@ -243,7 +369,8 @@ successor(Board, NewBoard) :-
 %% player moves
 gen_moves(Board, Direction, MovedBoard) :- 
     direction(Direction), 
-    move_board(Board, Direction, MovedBoard).
+    move_board(Board, Direction, MovedBoard),
+    Board \= MovedBoard. % moves that do not change the board are not allowed
 
 direction(left).
 direction(right).

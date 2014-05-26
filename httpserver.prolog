@@ -7,6 +7,8 @@
 :- use_module(library(http/json)).
 :- use_module(library(http/thread_httpd)).
 
+:- use_module('2048.prolog').
+
 :- op(200, fy, '@').
 
 :- debug(httpserver).
@@ -59,13 +61,12 @@ welcome_page(_Request) :-
     
 end_session(SessionId) :-
     debug(httpserver, 'End session: ~q', [SessionId]),
-    %% http_session_data(thread(ThreadId)),
-    %% catch(thread_signal(ThreadId, abort_game), _, true).
-    true.
+    http_session_data(thread(ThreadId)),
+    catch(thread_signal(ThreadId, abort_game), _, true).
 
 
 
-%%%%%%%%%%%     HTTP handlers    %%%%%%%%%%%
+%%%%%%%%%%%     HTTP REST handlers    %%%%%%%%%%%
 
 %    Declare HTTP locations we serve and how.
 
@@ -82,9 +83,14 @@ start(Request) :-
     http_read_json(Request, JSONIn),
     debug(httpserver, 'start called: ~w', [JSONIn]),
     JSONIn = json([board=Board]),
-    http_open_session(SessionId, []),
-    %% thread_create('2048':new_game(Board), ThreadId, [detached(true)]),
-    %% http_session_assert(SessionId, thread(ThreadId)),
+    init_session(Board).
+
+init_session(_) :-
+    http_session_data(thread(_ThreadId)), !. % already in a session
+init_session(Board) :-
+    http_open_session(_SessionId, []),
+    thread_create(new_game(Board), ThreadId, [detached(true)]),
+    http_session_assert(thread(ThreadId)),
     reply_json(json([ok= true]), [width(0)]).
 
 
@@ -97,9 +103,10 @@ end(_Request) :-
 
 move(_Request) :-
     debug(httpserver, 'move called', []),
-    %% http_session_data(thread(ThreadId)),
-    %% thread_send_message(ThreadId, needNextMove),
-    %% thread_get_message(nextMove(Move)),
+    http_session_data(thread(ThreadId)),
+    thread_self(Self),
+    thread_send_message(ThreadId, needNextMove(Self)),
+    thread_get_message(nextMove(Move)),
     Move=left,
     reply_json(json([move=Move]), [width(0)]).
 
@@ -109,6 +116,6 @@ board(Request) :-
     JSONIn = json(Objects),
     member(board=Board, Objects),
     member(lastMove=LastMove, Objects),
-    %% http_session_data(thread(ThreadId)),
-    %% thread_send_message(ThreadId, board(LastMove, Board)),
+    http_session_data(thread(ThreadId)),
+    thread_send_message(ThreadId, board(LastMove, Board)),
     reply_json(json([ok= @true]), [width(0)]).
