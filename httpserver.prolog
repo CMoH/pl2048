@@ -55,10 +55,14 @@ welcome_page(_Request) :-
 
 %%%%%%%%%%%  HTTP session handling  %%%%%%%%%%%
 
-:- http_set_session_options([create(noauto), timeout(60)]).
+:- http_set_session_options([timeout(60)]).
 
+:- listen(http_session(begin(SessionId, _Peer)), begin_session(SessionId)).
 :- listen(http_session(end(SessionId, _Peer)), end_session(SessionId)).
     
+begin_session(SessionId) :-
+    debug(httpserver, 'Begin session: ~q', [SessionId]).
+
 end_session(SessionId) :-
     debug(httpserver, 'End session: ~q', [SessionId]),
     http_session_data(thread(ThreadId)),
@@ -83,13 +87,12 @@ start(Request) :-
     http_read_json(Request, JSONIn),
     debug(httpserver, 'start called: ~w', [JSONIn]),
     JSONIn = json([board=Board]),
-    init_session(Board).
-
-init_session(_) :-
-    http_session_data(thread(_ThreadId)), !. % already in a session
-init_session(Board) :-
-    http_open_session(_SessionId, []),
-    thread_create(new_game(Board), ThreadId, [detached(true)]),
+    thread_create(new_game(Board), ThreadId, 
+                  [detached(true), 
+                   global(2000000),
+                   local( 2000000),
+                   trail( 2000000)]),
+    debug(httpserver, 'thread id: ~w', [ThreadId]),
     http_session_assert(thread(ThreadId)),
     reply_json(json([ok= true]), [width(0)]).
 
@@ -107,7 +110,6 @@ move(_Request) :-
     thread_self(Self),
     thread_send_message(ThreadId, needNextMove(Self)),
     thread_get_message(nextMove(Move)),
-    Move=left,
     reply_json(json([move=Move]), [width(0)]).
 
 board(Request) :-

@@ -1,8 +1,10 @@
 :- module('2048', [new_game/1, abort_game/0]).
 
-:- set_prolog_stack(global, limit(8 * 10**9)).
-:- set_prolog_stack(local,  limit(8 * 10**9)).
-:- set_prolog_stack(trail,  limit(8 * 10**9)).
+%% :- set_prolog_stack(global, limit(2 * 10**9)).
+%% :- set_prolog_stack(local,  limit(2 * 10**9)).
+%% :- set_prolog_stack(trail,  limit(2 * 10**9)).
+
+:- debug('2048').
 
 %% for thread management
 
@@ -10,7 +12,7 @@ new_game(Board) :-
     thread_loop([ board(Board, []) ]).
 
 abort_game :-
-    fail.
+    throw(aborted).
 
 %% paths representation:
 %% Path = [  board(Board, [
@@ -25,44 +27,51 @@ abort_game :-
 %%           ...
 %%        ]
 
-%% TODO: stop looping and stop in thread_get_message if MaxDepth reached
 thread_loop(Paths) :-
-    iddfs(Paths, NewPaths),
-    thread_handle_messages(NewPaths, SelectedPaths), !,
+    update_paths(Paths, NewPaths),
+    handle_messages(NewPaths, SelectedPaths),
     thread_loop(SelectedPaths).
 
-thread_handle_messages(Paths, Paths) :-
-    thread_peek_message(needNextMove(_)), !,
-    thread_get_message(needNextMove(ThreadId)),
-    find_best_move(Paths, Move),
-    thread_send_message(ThreadId, nextMove(Move)).
-thread_handle_messages(Paths, NewPaths) :-
-    thread_peek_message(board(_, _)), !,
-    thread_get_message(board(LastMove, Board)),
-    select_board(LastMove, Board, Paths, NewPaths).
-thread_handle_messages(_, _) :-
-    thread_peek_message(abort), !,
-    thread_get_message(abort),
-    fail.
-thread_handle_messages(Paths, Paths) :-
-    thread_peek_message(print_stats), !,
-    thread_get_message(print_stats),
+update_paths(Paths, Paths) :-
+    depth(Paths, Depth),
+    Depth > 3, !.
+update_paths(Paths, NewPaths) :-
+    iddfs(Paths, NewPaths).
+
+handle_messages(Paths, NewPaths) :-
+    thread_peek_message(_), !,
+    thread_get_message(Message),
+    handle_message(Message, Paths, Paths1),
+    handle_messages(Paths1, NewPaths).
+handle_messages(Paths, Paths).
+
+handle_message(print_stats, Paths, Paths) :-
     print_stats(Paths).
-thread_handle_messages(Paths, Paths).
+handle_message(needNextMove(ThreadId), Paths, Paths) :-
+    find_best_move(Paths, Direction),
+    print_best_move(Paths, Direction),
+    thread_send_message(ThreadId, nextMove(Direction)).
+handle_message(board(LastMove, Board), Paths, NewPaths) :-
+    select_board(LastMove, Board, Paths, NewPaths).
+handle_message(abort, _, _) :-
+    fail.
+handle_messages(Msg, Paths, Paths) :-
+    thread_self(Self),
+    debug('2048', 'thread ~w: invalid message received: ~w', [Self, Msg]).
 
 
 iddfs(Paths, NewPaths) :-
     findall(NewState, ( member(State, Paths), dfs1(State, NewState) ), NewPaths).
 
 dfs1(board(Board, []), board(Board, NewMoves)) :- 
-    !,                          % stop after exploring one level
+    !,                          % explore one level down
     findall(NewMove, dfs1_gen_moves(Board, NewMove), NewMoves).
 dfs1(board(Board, Moves), board(Board, NewMoves)) :-
-    findall(NewMove, ( 
-                member(move(Direction, _Score, Path), Moves), 
+    findall(NewMove, 
+            (   member(move(Direction, _Score, Path), Moves), 
                 iddfs(Path, NewPath),
                 sum_score(NewPath, NewScore),
-                NewMove = move(Direction, NewScore, NewPath) ),
+                NewMove = move(Direction, NewScore, NewPath)  ),
             NewMoves).
 
 dfs1_gen_moves(Board, Move) :-
@@ -83,8 +92,12 @@ sum_score(Boards, TotalScore) :-
 
 find_best_move(Paths, Direction) :-
     Paths = [board(_, Moves)],
-    Moves = [H|T],
+    Moves = [H|T], !,
     find_best_move(T, H, Direction).
+find_best_move(Paths, _Direction) :-
+    debug('2048', 'find_best_move failed', []),
+    print_moves(Paths),
+    fail.
 
 find_best_move([], move(Direction, _, _), Direction) :- !.
 find_best_move([H|T], Current, Direction) :-
@@ -97,18 +110,44 @@ find_best_move([H|T], Current, Direction) :-
 %% executes a move by selecting the board chosen randomly by the game after LastMove
 select_board(LastMove, Board, Paths, NewGameTree) :-
     Paths = [board(_, Moves)],
-    member(move(LastMove, _, NextBoards), Moves), !,
+    member(move(LastMove, _, NextBoards), Moves),
     member(board(Board, NextMoves), NextBoards), !,
     NewGameTree = [board(Board, NextMoves)].
+select_board(LastMove, Board, Paths, NewGameTree) :-
+    Paths = [board(LastBoard, _) | _], % make sure we succeed in reporting
+    print_message(warning, select_board_failure(LastBoard, LastMove, Board)),
+    iddfs([board(Board, [])], NewGameTree).
+
+
+:- multifile prolog:message/1.
+prolog:message(select_board_failure(LastBoard, Move, Board)) -->
+    {},
+    ['select_board failure: cannot move board(~w) ~w with result board(~w)'-[LastBoard,Move,Board]].
+                    
+
+print_moves(Paths) :-
+    length(Paths, TopBoards),
+    findall(board(Board, AvailableMoves), 
+            (  member(board(Board, Moves), Paths),
+               findall(move(Direction, Score), 
+                       member(move(Direction, Score, _), Moves),
+                       AvailableMoves)  ),
+            Boards),
+    debug('2048', 'Available moves (~w top boards): ~w', [TopBoards, Boards]).
+    
+print_best_move(Paths, BestMove) :-
+    print_moves(Paths),
+    debug('2048', 'Best move is: ~w', [BestMove]).
+
 
 
 print_stats(Paths) :-
     length(Paths, Len),
     depth(Paths, Depth),
     state_count(Paths, Count),
-    format('Top-level boards: ~w~n', [Len]),
-    format('Depth: ~w~n', [Depth]),
-    format('States: ~w~n', [Count]).
+    debug('2048', 'Top-level boards: ~w~n', [Len]),
+    debug('2048', 'Depth: ~w~n', [Depth]),
+    debug('2048', 'States: ~w~n', [Count]).
 
 depth([], 0).
 depth(Paths, DepthOut) :-
@@ -151,6 +190,7 @@ test_board([0, 2, 4, 8,
             0, 2, 4, 8,
             0, 2, 4, 8]).
 
+test_board1([0,0,2,0,0,2,0,0,0,0,0,0,0,0,0,0]).
 
 %% board printing predicates
 print_board(B) :-
@@ -206,6 +246,18 @@ depth_first_search(CurrentPath,CurrentState,Solution) :-
     successor(CurrentState,NewState),
     not(member(NewState,CurrentPath)),
     depth_first_search([CurrentState|CurrentPath],NewState,Solution).
+
+
+%% depth-limited dfs
+depth_first_search(CurrentPath,CurrentState,Solution, _MaxDepth) :-
+    win(CurrentState), !, % stop searching this path after 2048
+    Solution=[CurrentState|CurrentPath].
+
+depth_first_search(CurrentPath,CurrentState,Solution, MaxDepth) :-
+    length(CurrentPath, Depth), Depth =< MaxDepth, !,
+    successor(CurrentState,NewState),
+    not(member(NewState,CurrentPath)),
+    depth_first_search([CurrentState|CurrentPath],NewState,Solution, MaxDepth).
 
 
 %% depth-limited bfs
