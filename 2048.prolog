@@ -278,108 +278,6 @@ breadth_first_search([[Node|Path]|RestPaths],Solution, MaxDepth) :-
     breadth_first_search(CurrentPaths,Solution, MaxDepth).
 
 
-%% bfs while caching moves in the database
-:- dynamic cached_move/3.
-:- dynamic cached_score/2.
-:- dynamic parent_move/2.
-
-%% cache utility preds
-
-cache_stats :-
-    findall(Board, cached_move(Board, _, _), Boards),
-    findall(Score, cached_score(_, Score), Scores),
-    findall(Board, parent_move(Board, _), Parents),
-    length(Boards, LBoards),
-    length(Scores, LScores),
-    length(Parents, LParents),
-    format('Boards: ~d~nScores: ~d~nParents:~d~n',
-           [LBoards, LScores, LParents]).
-           
-
-clean_cache :-
-    retractall(cached_move(_, _, _)),
-    retractall(cached_score(_, _)),
-    retractall(parent_move(_, _)).
-
-
-%% cache hits
-caching_bfs(_Board, 0) :- !.    % stop after reaching required depth
-caching_bfs(Board, _MaxDepth) :-
-    win(Board), !.              % stop if we got to 2048
-
-caching_bfs(Board, MaxDepth) :- 
-    MaxDepth > 0,
-    cached_move(Board, _, _), !,
-    MaxDepth1 is MaxDepth - 1,
-    forall(cached_move(Board, _Direction, NextBoards), 
-           ( forall(member(NextBoard, NextBoards), 
-                    caching_bfs(NextBoard, MaxDepth1)) )).
-
-%% cache misses -> generate new moves
-caching_bfs(Board, MaxDepth) :-
-    MaxDepth > 0,
-    forall(gen_moves(Board, Direction, MovedBoard),
-           examine_move(Board, Direction, MovedBoard, MaxDepth)).
-
-examine_move(Board, Direction, MovedBoard, MaxDepth) :-
-    findall(NextBoard, gen_new_tiles(MovedBoard, NextBoard), NextBoards),
-    add_move(Board, Direction, NextBoards),
-    MaxDepth1 is MaxDepth - 1,
-    forall(member(NextBoard, NextBoards), caching_bfs(NextBoard, MaxDepth1)).
-
-%% cache a move and update score of parent moves
-add_move(Board, Direction, NextBoards) :-
-    \+ cached_move(Board, Direction, _), !,
-
-    board_score(Board, Score), 
-
-    sort(NextBoards, UniqueNextBoards),
-
-    assert(cached_move(Board, Direction, UniqueNextBoards)),
-    assert(cached_score(Board, Score)),
-    forall(member(NextBoard, NextBoards), 
-           ignore(( \+parent_move(NextBoard, _),
-                    assert(parent_move(NextBoard, Board)) ))
-          ),
-
-    update_parent_scores(Board, Score).
-
-add_move(Board, Direction, _) :- writef('re-adding %w %w\n', [Board, Direction]).
-
-
-%% removes a move and related moves rom the cache
-%% TODO
-del_move(Board, Excluding) :-
-    \+ member(Board, Excluding), 
-    cached_move(Board, _, NextBoards),
-    parent_move(Board, ParentBoard), !,
-    retractall(cached_move(Board, _, _)),
-    retractall(cached_score(Board, _)),
-    retractall(parent_move(Board, _)),
-    foreach(member(Move, [ParentBoard | NextBoards]), 
-            del_move(Move, Excluding)).
-del_move(_,_).
-
-
-
-%% select best move from a given position
-select_move(Board, Move, LesserMoves) :-
-    findall(move(Direction, Score),
-            ( cached_move(Board, Direction, _NextBoards),
-              cached_score(Board, Score) ),
-            Moves),
-    best_move(Moves, move(left, 0), Move),
-    select(Move, Moves, LesserMoves).
-
-best_move([], Move, Move).
-best_move([Head | Rest], CurrentMove, BestMove) :- !,
-    move(_, Score) = Head,
-    move(_, CurrentScore) = CurrentMove,
-    ( Score > CurrentScore 
-      ->  best_move(Rest, Head, BestMove) 
-      ;   best_move(Rest, CurrentMove, BestMove) ).
-
-
 %% the strategy for scoring the board
 board_score(Board, Score) :-
     findall(S, board_score_rule(Board, S), L),
@@ -388,17 +286,6 @@ board_score(Board, Score) :-
 board_score_rule(Board,  10) :- win(Board).
 board_score_rule(Board, -10) :- lose(Board).
 board_score_rule(Board,  FT) :- count(0, Board, FT).
-
-
-update_parent_scores(Board, Score) :-
-    parent_move(Board, ParentBoard),
-    cached_score(ParentBoard, ParentScore), !,
-    NewParentScore is ParentScore + Score,
-    retract(cached_score(ParentBoard, ParentScore)),
-    assert(cached_score(ParentBoard, NewParentScore)),
-    update_parent_scores(ParentBoard, Score).
-update_parent_scores(_,_).
-
 
 
 %% game definition
