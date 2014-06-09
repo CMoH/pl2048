@@ -16,12 +16,12 @@ abort_game :-
 
 %% paths representation:
 %% Path = [  board(Board, [
-%%                     move(left, Score, Path), 
+%%                     move(left, Score, Path, Unifications), 
 %%                     move(right, ...),
 %%                     move(down, ...),
 %%                     move(up, ...) ] ), 
 %%           board(Board, [
-%%                     move(left, Score, Path), 
+%%                     move(left, Score, Path, Unifications), 
 %%                     move(right, ...),
 %%                     move(...) ] ), 
 %%           ...
@@ -36,7 +36,7 @@ update_paths(Paths, Paths) :-
     depth(Paths, Depth),
     Depth > 3, !.
 update_paths(Paths, NewPaths) :-
-    iddfs(Paths, NewPaths).
+    id_bfs(Paths, NewPaths).
 
 handle_messages(Paths, NewPaths) :-
     thread_peek_message(_), !,
@@ -60,69 +60,99 @@ handle_messages(Msg, Paths, Paths) :-
     debug('2048', 'thread ~w: invalid message received: ~w', [Self, Msg]).
 
 
-iddfs(Paths, NewPaths) :-
-    findall(NewState, ( member(State, Paths), dfs1(State, NewState) ), NewPaths).
+id_bfs(Paths, NewPaths) :-
+    findall(NewState, ( member(State, Paths), bfs1(State, NewState) ), NewPaths).
 
-dfs1(board(Board, []), board(Board, NewMoves)) :- 
+bfs1(board(Board, []), board(Board, NewMoves)) :- 
     !,                          % explore one level down
-    findall(NewMove, dfs1_gen_moves(Board, NewMove), NewMoves).
-dfs1(board(Board, Moves), board(Board, NewMoves)) :-
+    findall(NewMove, bfs1_gen_move(Board, NewMove), NewMoves).
+bfs1(board(Board, Moves), board(Board, NewMoves)) :-
     findall(NewMove, 
-            (   member(move(Direction, _Score, Path), Moves), 
-                iddfs(Path, NewPath),
-                sum_score(NewPath, NewScore),
-                NewMove = move(Direction, NewScore, NewPath)  ),
+            (   member(move(Direction, _Score, Path, Unifications), Moves), 
+                id_bfs(Path, NewPath),
+                aggregate_score(NewPath, Unifications, NewScore),
+                %% unifications of current move did not change, 
+                %% and those on higher depth are already in their path score
+                NewMove = move(Direction, NewScore, NewPath, Unifications) 
+            ),
             NewMoves).
 
-dfs1_gen_moves(Board, Move) :-
-    gen_moves(Board, Direction, MovedBoard),
+bfs1_gen_move(Board, Move) :-
+    gen_moves(Board, Direction, MovedBoard, Unifications),
     findall(board(NewBoard, []), 
             gen_new_tiles(MovedBoard, NewBoard),
             NewBoards),
-    sum_score(NewBoards, TotalScore),
-    Move = move(Direction, TotalScore, NewBoards).
-
-sum_score(Boards, TotalScore) :-
-    findall(Score, ( 
-                member(board(Board, _), Boards), 
-                board_score(Board, Score) ),
-            Scores),
-    sum_list(Scores, TotalScore).
+    aggregate_score(NewBoards, Unifications, Score),
+    Move = move(Direction, Score, NewBoards, Unifications).
 
 
+%% find the best move from a given state
 find_best_move(Paths, Direction) :-
     Paths = [board(_, Moves)],
     Moves = [H|T], !,
     find_best_move(T, H, Direction).
 find_best_move(Paths, _Direction) :-
-    debug('2048', 'find_best_move failed', []),
-    print_moves(Paths),
+    print_message(warning, find_best_move_failed(Paths)),
     fail.
 
-find_best_move([], move(Direction, _, _), Direction) :- !.
+find_best_move([], move(Direction, _, _, _), Direction) :- !.
 find_best_move([H|T], Current, Direction) :-
-    Current = move(_, CurrentScore, _),
-    H = move(_, OtherScore, _), !,
+    Current = move(_, CurrentScore, _, _),
+    H = move(_, OtherScore, _, _), !,
     ( CurrentScore > OtherScore 
       -> find_best_move(T, Current, Direction) 
       ;  find_best_move(T, H, Direction) ).
+
       
 %% executes a move by selecting the board chosen randomly by the game after LastMove
 select_board(LastMove, Board, Paths, NewGameTree) :-
     Paths = [board(_, Moves)],
-    member(move(LastMove, _, NextBoards), Moves),
+    member(move(LastMove, _, NextBoards, _), Moves),
     member(board(Board, NextMoves), NextBoards), !,
     NewGameTree = [board(Board, NextMoves)].
 select_board(LastMove, Board, Paths, NewGameTree) :-
     Paths = [board(LastBoard, _) | _], % make sure we succeed in reporting
     print_message(warning, select_board_failure(LastBoard, LastMove, Board)),
-    iddfs([board(Board, [])], NewGameTree).
+    id_bfs([board(Board, [])], NewGameTree).
 
+    
+%% the strategy for scoring boards and moves
+board_score(Board, Score) :-
+    findall(S, board_score_rule(Board, S), L),
+    sum_list(L, Score).
+
+board_score_rule(Board,  10) :- win(Board).
+board_score_rule(Board, -10) :- lose(Board).
+board_score_rule(Board,  FT) :- count_element(0, Board, FT).
+
+
+aggregate_score(Boards, Unifications, TotalScore) :-
+    findall(Score, ( 
+                member(board(Board, Moves), Boards), 
+                aggregate_subscores(Moves, SubScore),
+                board_score(Board, BoardScore),
+                Score is BoardScore + SubScore
+            ),
+            Scores),
+    sum_list(Scores, BoardsTotalScore),
+    length(Unifications, UnificationsCount),
+    TotalScore is BoardsTotalScore + UnificationsCount.
+
+aggregate_subscores([], 0).
+aggregate_subscores([move(_, Score, _, _) | Tail], TotalScore) :-
+    aggregate_subscores(Tail, TailScore),
+    TotalScore is TailScore + Score.
+
+
+%% utilities
 
 :- multifile prolog:message/1.
 prolog:message(select_board_failure(LastBoard, Move, Board)) -->
     {},
     ['select_board failure: cannot move board(~w) ~w with result board(~w)'-[LastBoard,Move,Board]].
+prolog:message(find_best_move_failed(Paths)) -->
+    {length(Paths,PLen)},
+    ['find_best_move failure: ~w paths'-[PLen]].
                     
 
 print_moves(Paths) :-
@@ -130,7 +160,7 @@ print_moves(Paths) :-
     findall(board(Board, AvailableMoves), 
             (  member(board(Board, Moves), Paths),
                findall(move(Direction, Score), 
-                       member(move(Direction, Score, _), Moves),
+                       member(move(Direction, Score, _, _), Moves),
                        AvailableMoves)  ),
             Boards),
     debug('2048', 'Available moves (~w top boards): ~w', [TopBoards, Boards]).
@@ -154,7 +184,7 @@ depth(Paths, DepthOut) :-
     findall(Depth, (
                 member(board(_, Moves), Paths),
                 ( Moves = [] -> Depth = 0 
-                  ; ( member(move(_,_,Path), Moves),
+                  ; ( member(move(_,_,Path,_), Moves),
                       depth(Path, Depth) )
                 ) ),
             Depths),
@@ -167,7 +197,7 @@ state_count(Paths, CountOut) :-
     findall(Count, (
                 member(board(_, Moves), Paths),
                 ( Moves = [] -> Count = 0 
-                  ; ( member(move(_,_,Path), Moves),
+                  ; ( member(move(_,_,Path,_), Moves),
                       state_count(Path, Count) )
             ) ),
             Counts),
@@ -190,7 +220,7 @@ test_board([0, 2, 4, 8,
             0, 2, 4, 8,
             0, 2, 4, 8]).
 
-test_board1([0,0,2,0,0,2,0,0,0,0,0,0,0,0,0,0]).
+test_board([0,0,2,0,0,2,0,0,0,0,0,0,0,0,0,0]).
 
 %% board printing predicates
 print_board(B) :-
@@ -278,37 +308,27 @@ breadth_first_search([[Node|Path]|RestPaths],Solution, MaxDepth) :-
     breadth_first_search(CurrentPaths,Solution, MaxDepth).
 
 
-%% the strategy for scoring the board
-board_score(Board, Score) :-
-    findall(S, board_score_rule(Board, S), L),
-    sum_list(L, Score).
-
-board_score_rule(Board,  10) :- win(Board).
-board_score_rule(Board, -10) :- lose(Board).
-board_score_rule(Board,  FT) :- count(0, Board, FT).
-
-
 %% game definition
 
 win(Board) :- member(2048, Board).
-lose(Board) :- count(0, Board, 0), \+ member(2048, Board).
+lose(Board) :- count_element(0, Board, 0), \+ member(2048, Board).
 
-count(_, [], 0).
-count(X, [X|T], Count) :- !,
-    count(X, T, Count1),
+count_element(_, [], 0).
+count_element(X, [X|T], Count) :- !,
+    count_element(X, T, Count1),
     Count is Count1 + 1.
-count(X, [_|T], Count) :-
-    count(X, T, Count).
+count_element(X, [_|T], Count) :-
+    count_element(X, T, Count).
     
 
 successor(Board, NewBoard) :-
-    gen_moves(Board, _, MovedBoard),
+    gen_moves(Board, _, MovedBoard, _),
     gen_new_tiles(MovedBoard, NewBoard).
 
 %% player moves
-gen_moves(Board, Direction, MovedBoard) :- 
+gen_moves(Board, Direction, MovedBoard, Unifications) :- 
     direction(Direction), 
-    move_board(Board, Direction, MovedBoard),
+    move_board(Board, Direction, MovedBoard, Unifications),
     Board \= MovedBoard. % moves that do not change the board are not allowed
 
 direction(left).
@@ -316,18 +336,18 @@ direction(right).
 direction(up).
 direction(down).
 
-move_board(Board, Direction, NewBoard) :-
+move_board(Board, Direction, NewBoard, Unifications) :-
     % for I = 0 .. 3 * 16: % pass the board 3 times in order to achieve stable position of each piece
     %   Pos = I mod 16
     %   move_piece(Direction, Pos, Board, NewBoard)
     move_board_repeat(0, 3 * 16, Board, Board1, Direction),
-    unmark_board(Board1, NewBoard).
+    unmark_board(Board1, NewBoard, Unifications).
 
 move_board_repeat(N, Max, Board, Board, _) :- N >= Max, !.
-move_board_repeat(N, Max, Board, NewBoard, Direction) :- !,
+move_board_repeat(N, Max, Board, NewBoard, Direction) :- 
     Pos is N mod 16,
     N1 is N+1,
-    move_piece(Direction, Pos, Board, Board1),
+    move_piece(Direction, Pos, Board, Board1), !,
     move_board_repeat(N1, Max, Board1, NewBoard, Direction).
 
 move_piece(Direction, SourcePos, Board, NewBoard) :-
@@ -347,18 +367,20 @@ checked_move(down,  Pos, NewPos) :- NewPos is Pos + 4, NewPos  < 16.
 
 
 combine(0, Source, Source, 0) :- !.
-combine(Target, Target, NewTarget, 0) :- number(Target), !,
+combine(Target, Target, NewTarget, 0) :- 
+    number(Target), !,
     NewTargetVal is 2 * Target, 
     NewTarget = combined(NewTargetVal).
 combine(Target, Source, Target, Source).
 
 
-unmark_board([], []).
-unmark_board([H|T], [H|RT]) :- 
-    number(H), !, 
-    unmark_board(T, RT).
-unmark_board([combined(H)|T], [H|RT]) :- 
-    unmark_board(T, RT).
+unmark_board([], [], []).
+unmark_board([combined(H)|T], [H|RT], [H|Unifications]) :- 
+    !,
+    unmark_board(T, RT, Unifications).
+unmark_board([H|T], [H|RT], Unifications) :- 
+    number(H),
+    unmark_board(T, RT, Unifications).
 
 
 %% generate random new tiles
