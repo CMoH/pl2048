@@ -112,6 +112,7 @@ move(_Request) :-
     thread_get_message(nextMove(Move)),
     reply_json(json([move=Move]), [width(0)]).
 
+
 board(Request) :-
     http_read_json(Request, JSONIn),
     debug(httpserver, 'board called: ~w', [JSONIn]),

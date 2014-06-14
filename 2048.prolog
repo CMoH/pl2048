@@ -70,7 +70,7 @@ bfs1(board(Board, Moves), board(Board, NewMoves)) :-
     findall(NewMove, 
             (   member(move(Direction, _Score, Path, Unifications), Moves), 
                 id_bfs(Path, NewPath),
-                aggregate_score(NewPath, Unifications, NewScore),
+                aggregate_score(NewPath, NewScore),
                 %% unifications of current move did not change, 
                 %% and those on higher depth are already in their path score
                 NewMove = move(Direction, NewScore, NewPath, Unifications) 
@@ -78,11 +78,11 @@ bfs1(board(Board, Moves), board(Board, NewMoves)) :-
             NewMoves).
 
 bfs1_gen_move(Board, Move) :-
-    gen_moves(Board, Direction, MovedBoard, Unifications),
+    gen_move(Board, Direction, MovedBoard, Unifications),
     findall(board(NewBoard, []), 
-            gen_new_tiles(MovedBoard, NewBoard),
+            gen_new_tile(MovedBoard, NewBoard),
             NewBoards),
-    aggregate_score(NewBoards, Unifications, Score),
+    aggregate_score(NewBoards, Score),
     Move = move(Direction, Score, NewBoards, Unifications).
 
 
@@ -126,22 +126,31 @@ board_score_rule(Board, -10) :- lose(Board).
 board_score_rule(Board,  FT) :- count_element(0, Board, FT).
 
 
-aggregate_score(Boards, Unifications, TotalScore) :-
+%% aggregates scores of moves from a board
+aggregate_score(Boards, TotalScore) :-
     findall(Score, ( 
                 member(board(Board, Moves), Boards), 
-                aggregate_subscores(Moves, SubScore),
-                board_score(Board, BoardScore),
-                Score is BoardScore + SubScore
+                path_score(Board, Moves, Score)
             ),
             Scores),
     sum_list(Scores, BoardsTotalScore),
-    length(Unifications, UnificationsCount),
-    TotalScore is BoardsTotalScore + UnificationsCount.
+    length(Boards, BoardsCount),
+    TotalScore is BoardsTotalScore / BoardsCount.
 
-aggregate_subscores([], 0).
-aggregate_subscores([move(_, Score, _, _) | Tail], TotalScore) :-
-    aggregate_subscores(Tail, TailScore),
-    TotalScore is TailScore + Score.
+%% computes the score of a path down to the end leaves
+path_score(Board, [], Score) :- 
+    !,
+    board_score(Board, Score).
+path_score(_, Moves, Score) :- 
+    findall(Score, ( 
+                member(move(_,MoveScore,_,Unifications), Moves), 
+                length(Unifications, UnificationsCount),
+                Score is MoveScore + UnificationsCount
+            ),
+            L),
+    sum_list(L, ScoreSum),
+    length(Moves, MoveCount),
+    Score is ScoreSum / MoveCount.
 
 
 %% utilities
@@ -156,14 +165,14 @@ prolog:message(find_best_move_failed(Paths)) -->
                     
 
 print_moves(Paths) :-
-    length(Paths, TopBoards),
+    depth(Paths, Depth),
     findall(board(Board, AvailableMoves), 
             (  member(board(Board, Moves), Paths),
                findall(move(Direction, Score), 
                        member(move(Direction, Score, _, _), Moves),
                        AvailableMoves)  ),
             Boards),
-    debug('2048', 'Available moves (~w top boards): ~w', [TopBoards, Boards]).
+    debug('2048', 'Available moves (depth=~w): ~w', [Depth, Boards]).
     
 print_best_move(Paths, BestMove) :-
     print_moves(Paths),
@@ -322,11 +331,11 @@ count_element(X, [_|T], Count) :-
     
 
 successor(Board, NewBoard) :-
-    gen_moves(Board, _, MovedBoard, _),
-    gen_new_tiles(MovedBoard, NewBoard).
+    gen_move(Board, _, MovedBoard, _),
+    gen_new_tile(MovedBoard, NewBoard).
 
 %% player moves
-gen_moves(Board, Direction, MovedBoard, Unifications) :- 
+gen_move(Board, Direction, MovedBoard, Unifications) :- 
     direction(Direction), 
     move_board(Board, Direction, MovedBoard, Unifications),
     Board \= MovedBoard. % moves that do not change the board are not allowed
@@ -384,7 +393,7 @@ unmark_board([H|T], [H|RT], Unifications) :-
 
 
 %% generate random new tiles
-gen_new_tiles(Board, NewBoard) :- 
+gen_new_tile(Board, NewBoard) :- 
     place_any_at([2,4],
                  [ 0, 1, 2, 3,
                    4, 5, 6, 7,
