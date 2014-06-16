@@ -1,8 +1,8 @@
 :- module('2048', [new_game/1, abort_game/0]).
 
-%% :- set_prolog_stack(global, limit(2 * 10**9)).
-%% :- set_prolog_stack(local,  limit(2 * 10**9)).
-%% :- set_prolog_stack(trail,  limit(2 * 10**9)).
+:- set_prolog_stack(global, limit(2 * 10**9)).
+:- set_prolog_stack(local,  limit(2 * 10**9)).
+:- set_prolog_stack(trail,  limit(2 * 10**9)).
 
 :- debug('2048').
 
@@ -33,10 +33,18 @@ thread_loop(Paths) :-
     thread_loop(SelectedPaths).
 
 update_paths(Paths, Paths) :-
+    aggregate_score(Paths, TopScore),
+    TopScore > 7, 
     depth(Paths, Depth),
-    Depth > 3, !.
+    Depth > 3, !.               % limit to depth 3 if many free tiles
+update_paths(Paths, Paths) :-
+    state_count(Paths, Count),
+    Count >  2000000, !.        % else limit to a fair amount of states explored
+    %% depth(Paths, Depth),
+    %% Depth > 3, !.
 update_paths(Paths, NewPaths) :-
-    id_bfs(Paths, NewPaths).
+    id_bfs(Paths, NewPaths),
+    print_stats_diff(Paths, NewPaths).
 
 handle_messages(Paths, NewPaths) :-
     thread_peek_message(_), !,
@@ -180,13 +188,26 @@ print_best_move(Paths, BestMove) :-
 
 
 
+print_stats_diff(OldPaths, NewPaths) :-
+    depth(OldPaths, OldDepth),
+    depth(NewPaths, NewDepth),
+    state_count(OldPaths, OldCount),
+    state_count(NewPaths, NewCount),
+    aggregate_score(NewPaths, Score),
+    Factor is NewCount / OldCount,
+    debug('2048', 'Depth: ~w -> ~w, States: ~w -> ~w (x~2f), Score: ~2f', 
+          [OldDepth, NewDepth, OldCount, NewCount, Factor, Score]).
+    
+    
 print_stats(Paths) :-
     length(Paths, Len),
     depth(Paths, Depth),
     state_count(Paths, Count),
-    debug('2048', 'Top-level boards: ~w~n', [Len]),
-    debug('2048', 'Depth: ~w~n', [Depth]),
-    debug('2048', 'States: ~w~n', [Count]).
+    aggregate_score(Paths, Score),
+    debug('2048', 'Top-level boards: ~w', [Len]),
+    debug('2048', 'Top-level score: ~w', [Score]),
+    debug('2048', 'Depth: ~w', [Depth]),
+    debug('2048', 'States: ~w', [Count]).
 
 depth([], 0).
 depth(Paths, DepthOut) :-

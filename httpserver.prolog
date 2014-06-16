@@ -55,7 +55,7 @@ welcome_page(_Request) :-
 
 %%%%%%%%%%%  HTTP session handling  %%%%%%%%%%%
 
-:- http_set_session_options([timeout(60)]).
+:- http_set_session_options([timeout(600)]).
 
 :- listen(http_session(begin(SessionId, _Peer)), begin_session(SessionId)).
 :- listen(http_session(end(SessionId, _Peer)), end_session(SessionId)).
