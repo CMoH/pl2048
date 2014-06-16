@@ -43,7 +43,7 @@ update_paths(Paths, Paths) :-
     %% depth(Paths, Depth),
     %% Depth > 3, !.
 update_paths(Paths, NewPaths) :-
-    id_bfs(Paths, NewPaths),
+    time(id_bfs(Paths, NewPaths)),
     print_stats_diff(Paths, NewPaths).
 
 handle_messages(Paths, NewPaths) :-
@@ -88,7 +88,7 @@ bfs1(board(Board, Moves), board(Board, NewMoves)) :-
 bfs1_gen_move(Board, Move) :-
     gen_move(Board, Direction, MovedBoard, Unifications),
     findall(board(NewBoard, []), 
-            gen_new_tile(MovedBoard, NewBoard),
+            gen_new_tile(MovedBoard, NewBoard, _Probability),
             NewBoards),
     aggregate_score(NewBoards, Score),
     Move = move(Direction, Score, NewBoards, Unifications).
@@ -352,8 +352,8 @@ count_element(X, [_|T], Count) :-
     
 
 successor(Board, NewBoard) :-
-    gen_move(Board, _, MovedBoard, _),
-    gen_new_tile(MovedBoard, NewBoard).
+    gen_move(Board, _Direction, MovedBoard, _Unifications),
+    gen_new_tile(MovedBoard, NewBoard, _Probability).
 
 %% player moves
 gen_move(Board, Direction, MovedBoard, Unifications) :- 
@@ -414,20 +414,32 @@ unmark_board([H|T], [H|RT], Unifications) :-
 
 
 %% generate random new tiles
-gen_new_tile(Board, NewBoard) :- 
+gen_new_tile(Board, NewBoard, Probability) :- 
     place_any_at([2,4],
                  [ 0, 1, 2, 3,
                    4, 5, 6, 7,
                    8, 9,10,11,
                   12,13,14,15 ],
                  Board, 
-                 NewBoard).
+                 NewBoard,
+                 Probability).
 
-place_any_at(Tiles, Positions, Board, NewBoard) :-
+place_any_at(Tiles, Positions, Board, NewBoard, Probability) :-
     member(Pos, Positions),
     member(Tile, Tiles),
+    new_tile_probability(Tile, Probability),
     replace_nth0(Board, Pos, 0, Tile, NewBoard).
 
-replace_nth0(List, Index, OldElem, NewElem, NewList) :-
-    nth0(Index,    List, OldElem, List1),
-    nth0(Index, NewList, NewElem, List1).
+new_tile_probability(2, 0.9).
+new_tile_probability(4, 0.1).
+
+%% replace_nth0(List, Index, OldElem, NewElem, NewList)
+replace_nth0([OldElem|Tail], 0, OldElem, NewElem, [NewElem|Tail]) :- !.
+replace_nth0([H|Tail], Index, OldElem, NewElem, [H|NewTail]) :- 
+    Index > 0,
+    Index1 is Index - 1,
+    replace_nth0(Tail, Index1, OldElem, NewElem, NewTail).
+
+%% replace_nth0(List, Index, OldElem, NewElem, NewList) :-
+%%     nth0(Index,    List, OldElem, List1),
+%%     nth0(Index, NewList, NewElem, List1).
